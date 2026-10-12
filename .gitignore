@@ -1,0 +1,21 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+# Generated test & build files
+coverage/
+dist/
+build/
+*.log
+__pycache__/
+.pytest_cache/
+# Captured content and sensitive exports (never commit session data)
+*.har
+*.webvtt
+*.vtt
+transcricao*.txt
+capturas/
+exports/
+.env
+.env.*

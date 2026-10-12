@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FHAD VTT Capture</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="brand-icon">CC</span><span><strong>FHAD VTT Capture <span id="extensionVersion" class="version">v…</span></strong><small>Captura contínua de legendas Hotmart</small></span></div>
+    <span id="status" class="status off">PARADO</span>
+  </header>
+  <main>
+    <div class="controls">
+      <button id="start" class="primary">▶ Iniciar captura</button>
+      <button id="stop" class="danger" hidden>■ Parar captura</button>
+      <button id="refresh" class="secondary">↻</button>
+    </div>
+    <p id="message" class="notice" hidden role="alert"></p>
+    <p id="captureHealth" class="capture-health" aria-live="polite">A verificar ligação…</p>
+    <p id="help" class="hint">Abre uma aula da Hotmart neste separador e inicia a captura. Não precisas de abrir o DevTools.</p>
+    <details class="panel collapsible current-lesson">
+      <summary><strong>Aula atual</strong><span id="currentLessonSummary" class="current-lesson-name" title="Aguardando aula…">Aguardando aula…</span></summary>
+      <p id="currentCueCount" class="hint">0 blocos · 0 falas</p>
+      <label for="currentTitle">Título identificado</label>
+      <input id="currentTitle" type="text" placeholder="Aguardando aula…">
+      <div class="buttons-inline">
+        <button id="rename" class="secondary">Confirmar título</button>
+        <button id="split" class="secondary">Nova aula manual</button>
+      </div>
+      <small class="hint">Se o título estiver errado, corrige-o. Ao mudar de vídeo, a transcrição anterior fica guardada no Brave sem abrir a janela de download.</small>
+    </details>
+    <section class="panel">
+      <div class="section-heading"><h2>Aulas capturadas</h2><span id="lessonCount">0</span></div>
+      <label class="select-all-label" for="selectAll"><input id="selectAll" type="checkbox" aria-label="Selecionar todas as aulas disponíveis"> Selecionar todos</label>
+      <div id="lessons" class="lesson-list"><div class="empty">Ainda sem aulas.</div></div>
+      <p class="hint">Marca as caixas das aulas que queres descarregar. Para juntar legendas, marca duas ou mais capturas terminadas do mesmo vídeo (título e URL iguais). As fontes de merge ficam guardadas como cópia de segurança.</p>
+      <button id="merge" class="primary full" disabled>⤨ Juntar capturas selecionadas (0)</button>
+      <button id="exportLessons" class="primary full" disabled>↓ Descarregar todas as aulas</button>
+      <button id="clearEligible" class="danger-outline full" disabled>♻ Limpar tudo o que for seguro (0)</button>
+      <small class="hint">Limpeza única: remove capturas vazias, aulas exportadas sem alterações e fontes de merges já exportados. Protege a aula atual, downloads incompletos e dados ainda não exportados. Pede confirmação; não apaga ZIPs do disco.</small>
+    </section>
+    <section class="panel compact">
+      <h2>Eventos recentes</h2>
+      <ul id="events" class="events"><li>Sem eventos.</li></ul>
+    </section>
+    <details class="panel collapsible">
+      <summary><strong>Velocidade do vídeo</strong><span id="speedCurrent">6×</span></summary>
+      <div id="speedButtons" class="speed-buttons" role="group" aria-label="Selecionar velocidade do vídeo">
+        <button class="secondary" data-speed="1">1×</button>
+        <button class="secondary" data-speed="2">2×</button>
+        <button class="secondary" data-speed="3">3×</button>
+        <button class="secondary" data-speed="4">4×</button>
+        <button class="secondary" data-speed="6">6×</button>
+      </div>
+      <p id="speedStatus" class="hint" aria-live="polite">Inicia a captura e escolhe uma velocidade.</p>
+      <small class="hint">A extensão só modifica a reprodução desta aula no Brave, quando o player permite. A velocidade escolhida é reaplicada nas aulas seguintes. A 4× ou 6× verifica se não faltaram blocos de legendas.</small>
+    </details>
+    <details class="panel collapsible">
+      <summary><strong>Qualidade durante a captura</strong><span id="qualityCurrent">Mínima</span></summary>
+      <label class="setting"><input type="checkbox" id="qualityMin"> Tentar usar a qualidade mínima do vídeo</label>
+      <button id="qualityCheck" class="secondary full" type="button">↻ Verificar qualidade agora</button>
+      <p id="qualityStatus" class="hint" aria-live="polite">A verificar compatibilidade do player…</p>
+      <small class="hint">A opção aplica-se à reprodução enquanto capturas, não à criação do ZIP. Quando o player expõe hls.js, video.js ou JW Player, tenta selecionar a resolução mais baixa e repor a definição anterior ao parar. Se o player não o permitir, mantém a qualidade atual. Não limita a rede nem modifica os ficheiros WEBVTT.</small>
+    </details>
+    <details class="panel collapsible supervisor-panel">
+      <summary><strong>Supervisor de reprodução</strong><span id="playerStatus">A aguardar</span></summary>
+      <label class="setting"><input type="checkbox" id="autoRecover"> Retomar vídeos bloqueados e tentar próxima aula no fim</label>
+      <p id="playerTime" class="hint">Verificação periódica do vídeo</p>
+      <div class="buttons-inline"><button id="checkPlayer" class="secondary">Verificar agora</button><button id="nextLesson" class="secondary">Próxima aula</button></div>
+      <small class="hint">A extensão não salta um vídeo a meio. Só tenta avançar automaticamente depois de chegar ao fim; a reprodução bloqueada tem um número limitado de tentativas. Se a Hotmart não expuser os controlos do player, informa-te aqui e exige intervenção manual.</small>
+    </details>
+    <footer>As transcrições são guardadas automaticamente no armazenamento local da extensão. Só há download quando clicas em «↓ ZIP» ou «Descarregar aulas». Não elimines a extensão antes de exportar os dados. Cada ZIP contém VTT, TXT, MD e metadata.json. <strong>Para uso com conteúdos a que tens acesso autorizado.</strong></footer>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

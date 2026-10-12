@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "FHAD VTT Capture — Hotmart",
+  "short_name": "FHAD VTT",
+  "description": "Captura VTT por aula Hotmart com separação segura por URL e título; contador, merge, deduplicação, downloads manuais, velocidade até 6x e tentativa de qualidade mínima com diagnóstico e recuperação de arranque.",
+  "version": "0.8.2",
+  "minimum_chrome_version": "125",
+  "permissions": [
+    "debugger",
+    "downloads",
+    "alarms",
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "webNavigation",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.hotmart.com/*",
+    "https://*.hotmart.com.br/*",
+    "https://*.hotmartclub.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "FHAD VTT Capture",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/blue16.png",
+      "48": "icons/blue48.png",
+      "128": "icons/blue128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/blue16.png",
+    "48": "icons/blue48.png",
+    "128": "icons/blue128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.hotmart.com/*",
+        "https://*.hotmart.com.br/*",
+        "https://*.hotmartclub.com/*"
+      ],
+      "js": [
+        "lib/navigation.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
