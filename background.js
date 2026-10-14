@@ -5,8 +5,11 @@ import {probeDebuggerTarget} from './lib/player-probe.js';
 import {sameLesson,mergeCues} from './lib/merge.js';
 import {checkedSpeed,matchesSpeed,speedLabel,speedExpression} from './lib/speed.js';
 import {qualityExpression} from './lib/quality.js';
+import {autoQualityDecision,acknowledgeManualQuality} from './lib/quality-scheduler.js';
 import {qualityMenuExpression} from './lib/quality-menu.js';
+import {hotmartNativeQualityExpression} from './lib/hotmart-native-quality.js';
 import {titleProbeExpression,completionExpression} from './lib/lesson-ui.js';
+import {previousCaptures,captureStartDecision} from './lib/capture-start.js';
 
 const STORE_KEY='fhad_vtt_capture_v1';
 const requests=new Map();
@@ -84,7 +87,7 @@ const cleanUrl=(url)=>{try{const u=new URL(url);return u.origin+u.pathname;}catc
 const addLog=(state,text)=>{state.log=[{when:now(),text},...(state.log||[])].slice(0,25);};
 const errMsg=(e)=>String(e?.message || e).slice(0,350);
 const emptyState=()=>({tracking:false,tabId:null,currentId:null,signature:null,finishedSignature:null,autoRecover:true,playback:null,lastSegmentAt:null,
-  playbackSpeed:6,speedStatus:null,qualityMinOnCapture:true,qualityStatus:null,
+  playbackSpeed:6,speedStatus:null,qualityMinOnCapture:true,qualityStatus:null,qualityAuto:null,
   routeUrl:null,routePending:null,lessons:[],log:[],lastError:null,captureErrors:0,startedAt:null});
 async function readState(){if(cache)return cache;const stored=await chrome.storage.local.get(STORE_KEY);cache=stored[STORE_KEY]||emptyState();return cache;}
 async function saveState(state){await chrome.storage.local.set({[STORE_KEY]:state});}
@@ -97,7 +100,7 @@ function createLesson(s,meta,reason='início'){
     mediaKey:meta.mediaKey||'',startedAt:now(),endedAt:null,segments:0,cues:[],
     timestampMaps:[],streamHosts:[],warnings:[],exportedSegments:0,downloadId:null,exportStatus:'',overlapWarnings:0,completionStatus:'A aguardar fim do vídeo',completedOnPlatform:false};
   if(lesson.confidence!=='alta')lesson.warnings.push('Identificação automática da aula deve ser confirmada');
-  s.lessons.push(lesson);s.currentId=lesson.id;s.signature=lesson.signature;s.finishedSignature=null;s.playback=null;s.endedObserved=null;
+  s.lessons.push(lesson);s.currentId=lesson.id;s.signature=lesson.signature;s.finishedSignature=null;s.playback=null;s.endedObserved=null;s.qualityAuto=null;
   if(s.qualityMinOnCapture){
     s.qualityStatus={status:'A aguardar o player para reduzir qualidade',applied:false,at:0,lessonId:lesson.id};
   }
@@ -105,6 +108,8 @@ function createLesson(s,meta,reason='início'){
     s.speedStatus={requested:s.playbackSpeed,applied:null,status:'A aguardar o player da nova aula',lessonId:lesson.id,at:0};
     chrome.alarms.create(SPEED_ALARM,{when:Date.now()+2500}).catch(()=>{});
   }
+  // Alarmes são apenas fallback: o evento 'playing' de cada iframe inicia a
+  // seleção de qualidade assim que o vídeo está pronto.
   if(s.qualityMinOnCapture)chrome.alarms.create(SPEED_ALARM,{when:Date.now()+2500}).catch(()=>{});
   addLog(s,`Aula iniciada: ${lesson.title} (${reason})`);updateBadge(s);return lesson;
 }
@@ -641,7 +646,70 @@ async function attachDebuggerRecoveringOwnSession(tabId){
     }
   }
 }
-async function start(s,tabId){
+// Inspeção sem efeitos secundários antes de perguntar ao utilizador.
+async function locateCaptureVideo(tabId){
+  const inspect=function(){
+    const videos=[];const seen=new Set();
+    function walk(root){if(!root||seen.has(root))return;seen.add(root);
+      for(const v of root.querySelectorAll?.('video')||[]) {
+        const r=v.getBoundingClientRect();
+        const area=Math.max(0,r.width*r.height);
+        if(area<1000 && !v.currentSrc && !v.src)continue;
+        const score=Math.min(200,area/5000)+(v.readyState||0)*6+(!v.paused?20:0)+(Number.isFinite(v.duration)&&v.duration>0?18:0);
+        videos.push({score,currentTime:Number(v.currentTime)||0,duration:Number.isFinite(v.duration)?v.duration:null,paused:v.paused});
+      }
+      for(const el of root.querySelectorAll?.('*')||[])if(el.shadowRoot)walk(el.shadowRoot);
+    }
+    walk(document);videos.sort((a,b)=>b.score-a.score);return videos[0]||null;
+  };
+  let results=[];
+  try{results=await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:inspect});}
+  catch {results=await chrome.scripting.executeScript({target:{tabId,frameIds:[0]},func:inspect});}
+  return results.filter(r=>r.result).map(r=>({...r.result,frameId:r.frameId}))
+    .sort((a,b)=>b.score-a.score)[0]||null;
+}
+// A extensão só inicia a captura depois de verificar o reposicionamento.
+async function seekCaptureVideo(tabId,frameId,seconds){
+  const seek=async (targetSeconds)=>{
+    const videos=[];const seen=new Set();
+    function walk(root){if(!root||seen.has(root))return;seen.add(root);
+      for(const v of root.querySelectorAll?.('video')||[]){const r=v.getBoundingClientRect();
+        const area=Math.max(0,r.width*r.height);
+        const score=Math.min(200,area/5000)+(v.readyState||0)*6+(!v.paused?20:0)+(Number.isFinite(v.duration)&&v.duration>0?18:0);
+        videos.push({v,score});}
+      for(const el of root.querySelectorAll?.('*')||[])if(el.shadowRoot)walk(el.shadowRoot);
+    }
+    walk(document);videos.sort((a,b)=>b.score-a.score);
+    const v=videos[0]?.v;
+    if(!v)return {ok:false,reason:'O player HTML5 ainda não está acessível.'};
+    const wasPlaying=!v.paused;
+    let requested=Math.max(0,Number(targetSeconds)||0);
+    if(Number.isFinite(v.duration)&&v.duration>0)requested=Math.min(requested,Math.max(0,v.duration-0.25));
+    try {
+      v.pause();v.currentTime=requested;
+      const started=Date.now();
+      while(Date.now()-started<2500 && (v.seeking || Math.abs(v.currentTime-requested)>1.0))
+        await new Promise(resolve=>setTimeout(resolve,80));
+      const actual=Number(v.currentTime);
+      const ok=Number.isFinite(actual)&&Math.abs(actual-requested)<=1.0&&!v.seeking;
+      if(wasPlaying)try{await v.play();}catch{}
+      return {ok,requested,actual,wasPlaying,reason:ok?'Posição verificada':'O player não confirmou a posição solicitada.'};
+    } catch(e) {
+      if(wasPlaying)try{await v.play();}catch{}
+      return {ok:false,reason:String(e?.message||e)};
+    }
+  };
+  const results=await chrome.scripting.executeScript({target:{tabId,frameIds:[frameId]},func:seek,args:[seconds]});
+  return results?.[0]?.result || {ok:false,reason:'O Brave não devolveu confirmação do reposicionamento.'};
+}
+async function prepareCaptureStart(s,tabId){
+  const tab=await resolveStartTab(tabId);
+  const video=await locateCaptureVideo(tab.id).catch(()=>null);
+  return {tabId:tab.id,url:cleanUrl(tab.url),video:video?{currentTime:video.currentTime,duration:video.duration,paused:video.paused}:null,
+    matches:previousCaptures(s.lessons,tab.url)};
+}
+
+async function start(s,tabId,mode='fresh',resumeLessonId=null){
   const tab=await resolveStartTab(tabId);
   tabId=tab.id;
   if(s.tracking){
@@ -652,7 +720,13 @@ async function start(s,tabId){
   // Isto pode acontecer quando o popup mostra um estado antigo após reinício
   // do service worker, mas a captura CDP permanece no Brave.
   if(await reconcileCaptureSession(s,tabId))return;
+  // Validar na mesma operação a URL e a escolha. Não confiar no estado do popup.
+  const decision=captureStartDecision(s.lessons,tab.url,mode,resumeLessonId);
+  const player=await locateCaptureVideo(tabId).catch(()=>null);
+  if(!player)throw Error('Não foi possível localizar o vídeo. Espera o player carregar e volta a iniciar a captura.');
   let attached=false;
+  let startupLessonId=null;
+  let resumeBackup=null;
   try{
     await attachDebuggerRecoveringOwnSession(tabId);
     attached=true;
@@ -674,18 +748,44 @@ async function start(s,tabId){
     playerSessions.clear();mainWorldContexts.clear();
     try{await chrome.alarms.create(WATCHDOG_ALARM,{periodInMinutes:0.5});}
     catch(e){addLog(s,'Aviso: supervisor indisponível; as legendas continuam a ser capturadas: '+errMsg(e));}
-    createLesson(s,normalizedMeta({url:tab.url,title:'Aula sem título',course:'Hotmart',confidence:'baixa'}),'captura iniciada');
-    addLog(s,'Captura iniciada. Mantém a reprodução ligada. Não abras o DevTools neste separador.');
+    // Primeiro verificar a posição com o player pausado. Os eventos de rede
+    // ficam em fila até esta operação terminar; uma falha não cria capturas.
+    const rewind=await seekCaptureVideo(tabId,player.frameId,decision.seconds);
+    if(!rewind.ok)throw Error(`Não foi possível confirmar o início do vídeo (${rewind.reason||'posição não confirmada'}). Nenhuma nova captura foi iniciada.`);
+    if(decision.kind==='resume'){
+      const old=findLesson(s,decision.lessonId);
+      resumeBackup={endedAt:old.endedAt,completionStatus:old.completionStatus,completedOnPlatform:old.completedOnPlatform};
+      old.endedAt=null;
+      s.currentId=old.id;s.signature=old.signature;s.qualityAuto=null;s.playback=null;s.endedObserved=null;
+      old.completionStatus='A continuar a aula';
+      startupLessonId=old.id;
+    }else{
+      const lesson=createLesson(s,normalizedMeta({url:tab.url,title:'Aula sem título',course:'Hotmart',confidence:'baixa'}),'captura desde o início');
+      startupLessonId=lesson.id;
+    }
+    // O CDP de rede já está ativo, e a posição foi confirmada antes da criação
+    // da captura. Falhar o seek nunca cria uma nova entrada sem o início.
+    const lesson=currentLesson(s);
+    if(lesson){lesson.resumeFromSeconds=decision.seconds;lesson.rewindVerifiedAt=now();}
+    addLog(s,decision.kind==='resume'?
+      `Captura retomada desde ${rewind.actual.toFixed(1)} s (sobreposição de 8 s, falas deduplicadas).`:
+      `Captura iniciada após confirmar vídeo no início (${rewind.actual.toFixed(1)} s).`);
     updateBadge(s,tabId);
 
     chrome.tabs.sendMessage(tabId,{type:'SCAN'}).catch(()=>{});
     chrome.alarms.create(SPEED_ALARM,{when:Date.now()+2500}).catch(()=>{});
   }catch(e){
+    if(startupLessonId){
+      if(decision.kind==='resume' && resumeBackup){
+        const old=findLesson(s,startupLessonId);
+        if(old)Object.assign(old,resumeBackup);
+      } else s.lessons=s.lessons.filter(l=>l.id!==startupLessonId || l.segments>0);
+    }
     // Um erro depois de attach não pode deixar o Brave a depurar um separador
     // enquanto o painel afirma PARADO. Recuar, libertar a ligação e permitir retry.
-    if(s.currentId){finishCurrent(s,'arranque interrompido');}
+    // Em caso de falha não fechar nem alterar uma captura anterior.
     s.tracking=false;s.tabId=null;s.currentId=null;s.routeUrl=null;s.routePending=null;
-    s.playback=null;s.speedStatus=null;s.qualityStatus=null;
+    s.playback=null;s.speedStatus=null;s.qualityStatus=null;s.qualityAuto=null;
     playerSessions.clear();mainWorldContexts.clear();
     if(attached){
       recoveryDetachDeadline.set(tabId,Date.now()+3000);
@@ -715,7 +815,7 @@ async function stop(s,reason='paragem manual',detached=false){
   await chrome.alarms.clear(WATCHDOG_ALARM);await chrome.alarms.clear(FINISH_ALARM);await chrome.alarms.clear(SPEED_ALARM);
   // Parar captura desativa a política de aceleração nas aulas seguintes.
   s.playbackSpeed=6;s.speedStatus={requested:6,applied:null,status:'Captura parada; 6× será aplicado no próximo arranque',at:Date.now()};
-  s.qualityStatus={status:'Captura parada',applied:false,at:Date.now()};
+  s.qualityStatus={status:'Captura parada',applied:false,at:Date.now()};s.qualityAuto=null;
   if(!detached){try{await chrome.debugger.detach({tabId});}catch(e){addLog(s,'Debugger já desligado: '+errMsg(e));}}
   updateBadge(s,tabId);
 }
@@ -836,7 +936,7 @@ async function applySpeedToProbe(s,probe,force=false){
 }
 // Redução opt-in/opt-out apenas através de controladores de qualidade reais.
 // Não manipula resolução via throttling de rede, que atrasaria os segmentos VTT.
-async function applyQualityToProbe(s,probe,mode='min',force=false){
+async function applyQualityToProbe(s,probe,mode='min',force=false,automatic=false){
   if(!probe?.cdpTarget)return {status:'Player não acessível; a qualidade mantém-se inalterada',applied:false};
   const old=s.qualityStatus||{};
   if(mode==='min' && !force && old.lessonId===s.currentId && old.trackId===probe.trackId &&
@@ -874,16 +974,37 @@ async function applyQualityToProbe(s,probe,mode='min',force=false){
               await new Promise(resolve=>setTimeout(resolve,1100));
               return (await chrome.debugger.sendCommand(probe.cdpTarget,'Runtime.evaluate',verifyArgs))?.result?.value;
             };
-            await clickAt(located);
-            let verified=await verifyNow();
+            // Hotmart (DOM real): o menu é composto por botões React
+            // role=menuitem / aria-label=240p. Tentar esse botão explícito
+            // PRIMEIRO; só usar coordenadas CDP se o estado não mudar.
+            let verified=null;
+            let clickPoint=located;
+            try{
+              const nativeArgs={...args,expression:hotmartNativeQualityExpression(located.height),awaitPromise:true,userGesture:true};
+              const native=(await chrome.debugger.sendCommand(probe.cdpTarget,'Runtime.evaluate',nativeArgs))?.result?.value;
+              if(native?.attempted||native?.alreadySelected){
+                verified=await verifyNow();
+                addLog(s,'Qualidade Hotmart '+located.height+'p: botão específico '+
+                  (native.attempted?'acionado':'já selecionado')+', confirmação '+(verified?.applied?'sim':'não'));
+                if(!verified?.applied){
+                  // A UI pode fechar o submenu. Não clicar às cegas no vídeo
+                  // usando coordenadas antigas; voltar a localizar a opção.
+                  const newLocated=(await chrome.debugger.sendCommand(probe.cdpTarget,'Runtime.evaluate',targetArgs))?.result?.value;
+                  clickPoint=newLocated?.ready&&newLocated.height===located.height?newLocated:null;
+                }
+              }
+            }catch(e){addLog(s,'Qualidade: fallback Hotmart indisponível: '+errMsg(e));}
+            if(!verified?.applied && clickPoint){
+              await clickAt(clickPoint);
+              verified=await verifyNow();
             // Em alguns menus o centro do elemento é apenas uma área de hover.
             // Recalcular o alvo no texto '240p' e tentar uma vez mais SOMENTE
             // quando o menu permanece aberto e a qualidade não foi confirmada.
-            if(verified?.found && !verified.applied && verified.menuOpenedForVerification){
+            if(!automatic && verified?.found && !verified.applied && verified.menuOpenedForVerification){
               const retryArgs={...args,expression:qualityMenuExpression('retry-target',!probe.cdpTarget.sessionId),awaitPromise:true,userGesture:true};
               const retry=(await chrome.debugger.sendCommand(probe.cdpTarget,'Runtime.evaluate',retryArgs))?.result?.value;
               if(retry?.ready && retry.height===located.height && Number.isFinite(retry.x)&&Number.isFinite(retry.y) &&
-                 Math.hypot(retry.x-located.x,retry.y-located.y)>=8){
+                 Math.hypot(retry.x-clickPoint.x,retry.y-clickPoint.y)>=8){
                 await clickAt(retry);
                 verified=await verifyNow();
                 addLog(s,'Qualidade '+located.height+'p: segundo clique dirigido ao texto; confirmado: '+(verified?.applied?'sim':'não'));
@@ -891,7 +1012,7 @@ async function applyQualityToProbe(s,probe,mode='min',force=false){
             }
             // Última alternativa: Enter APENAS se o controlo da resolução
             // tiver foco e o menu continuar a mostrar a mesma opção.
-            if(verified?.found && !verified.applied && verified.menuOpenedForVerification){
+            if(!automatic && verified?.found && !verified.applied && verified.menuOpenedForVerification){
               const focusArgs={...args,expression:qualityMenuExpression('focus-target'),awaitPromise:true,userGesture:true};
               const focused=(await chrome.debugger.sendCommand(probe.cdpTarget,'Runtime.evaluate',focusArgs))?.result?.value;
               if(focused?.ready){
@@ -905,7 +1026,8 @@ async function applyQualityToProbe(s,probe,mode='min',force=false){
                 addLog(s,'Qualidade '+located.height+'p: Enter com foco na opção; confirmado: '+(verified?.applied?'sim':'não'));
               }
             }
-            value=verified?.found?verified:{...located,applied:false,status:'Clique enviado, mas a confirmação do player está indisponível'};
+            } // Fim das tentativas CDP, apenas se não houve confirmação nativa.
+            value=verified?.found?verified:{...located,applied:false,status:'Seleção enviada, mas a confirmação do player está indisponível'};
             if(!value.applied)value={...value,status:'Qualidade '+located.height+'p NÃO confirmada. O player pode continuar em Auto; verifica o menu de qualidade.'};
             addLog(s,'Menu qualidade: tentativa '+located.height+'p, confirmação '+(value?.applied?'sim':'não'));
           }else if(located?.status){
@@ -918,6 +1040,19 @@ async function applyQualityToProbe(s,probe,mode='min',force=false){
           if(menuValue?.found && (menuValue.applied||menuValue.restored||menuValue.status))value=menuValue;
         }
       }catch(e){addLog(s,'Menu de qualidade indisponível: '+errMsg(e));}
+    }
+    if(automatic){
+      // A verificação pode voltar a abrir Qualidade. Fechar uma vez no fim;
+      // nunca deixar o supervisor reabrir a janela a cada atualização.
+      try{
+        const dismissArgs={...args,expression:qualityMenuExpression('dismiss'),awaitPromise:true,userGesture:true};
+        const dismiss=(await chrome.debugger.sendCommand(probe.cdpTarget,'Runtime.evaluate',dismissArgs))?.result?.value;
+        if(dismiss?.open && !dismiss.closed){
+          for(const type of ['keyDown','keyUp'])await chrome.debugger.sendCommand(probe.cdpTarget,'Input.dispatchKeyEvent',{
+            type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27,nativeVirtualKeyCode:27
+          });
+        }
+      }catch{}
     }
     const status=typeof value?.status==='string'?value.status:'Não foi possível verificar a qualidade deste player';
     const result={status,applied:Boolean(value?.applied),doNotRetry:Boolean(value?.doNotRetry),provider:value?.provider||null,
@@ -935,7 +1070,7 @@ async function setQualityPreference(s,enabled){
   s.qualityMinOnCapture=Boolean(enabled);
   if(!s.tracking){s.qualityStatus={status:s.qualityMinOnCapture?'Será aplicada ao iniciar a captura':'Desativada',applied:false};return s.qualityStatus;}
   const inspection=await readPlayback(s.tabId);
-  if(inspection.probe)await applyQualityToProbe(s,inspection.probe,enabled?'min':'restore',true);
+  if(inspection.probe){acknowledgeManualQuality(s);await applyQualityToProbe(s,inspection.probe,enabled?'min':'restore',true);}
   else s.qualityStatus={status:'Player ainda não acessível — a captura continua normalmente',applied:false,at:Date.now()};
   addLog(s,`Qualidade mínima ${enabled?'ativada':'desativada'}: ${s.qualityStatus.status}`);
   return s.qualityStatus;
@@ -980,7 +1115,7 @@ async function runWatchdog(s,source='verificação periódica'){
   const probe=inspection.probe;
   if(!probe){
     if(s.playbackSpeed>1)s.speedStatus={requested:s.playbackSpeed,applied:null,status:'Player não acessível — velocidade pendente',at:Date.now(),lessonId:s.currentId};
-    if(s.qualityMinOnCapture)s.qualityStatus={status:'Player não acessível — não foi possível reduzir a qualidade',applied:false,at:Date.now(),lessonId:s.currentId};
+    if(s.qualityMinOnCapture && !s.qualityAuto?.attempted)s.qualityStatus={status:'Player não acessível — não foi possível reduzir a qualidade',applied:false,at:Date.now(),lessonId:s.currentId};
     // Não transportar um relógio de progresso antigo para quando o player voltar.
     s.playback={lessonId:s.currentId,status:'tempo do player indisponível — captura VTT continua ativa',
       contextsInspected:inspection.contexts,targetsInspected:inspection.targets,lastProbeAt:Date.now()};
@@ -992,7 +1127,20 @@ async function runWatchdog(s,source='verificação periódica'){
   }
   await installCompletionListener(s,probe);
   if(s.playbackSpeed>1)await applySpeedToProbe(s,probe,source==='novo player');
-  if(s.qualityMinOnCapture)await applyQualityToProbe(s,probe,'min',source==='novo player');
+  if(s.qualityMinOnCapture){
+    const choice=autoQualityDecision(s,probe);
+    if(choice.action==='schedule'){
+      // O mesmo alarme usado na inicialização funciona mesmo com o popup fechado.
+      try{await chrome.alarms.create(SPEED_ALARM,{when:Date.now()+Math.max(500,Math.ceil(choice.after))});}catch{}
+      s.qualityStatus={...s.qualityStatus,status:'A aguardar reprodução estável antes de aplicar qualidade mínima',lessonId:s.currentId};
+    }else if(choice.action==='attempt'){
+      const outcome=await applyQualityToProbe(s,probe,'min',true,true);
+      if(!outcome.applied){
+        outcome.doNotRetry=true;
+        outcome.status+=' · Tentativa automática terminada. Usa «Verificar qualidade agora» para repetir manualmente.';
+      }
+    }
+  }
   // O utilizador pode também repor 1×; nesse caso a alteração é aplicada no clique.
   const previous=s.playback||{};
   // O ID da aula impede que dados de recuperação de uma aula afetem a seguinte.
@@ -1113,8 +1261,9 @@ chrome.downloads.onChanged.addListener(delta=>{
 chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
   serial(async s=>{
     switch(msg?.type){
+      case 'PREPARE_START':return await prepareCaptureStart(s,msg.tabId);
       case 'START':{
-        try{await start(s,msg.tabId);return {tracking:true};}
+        try{await start(s,msg.tabId,msg.mode,msg.resumeLessonId);return {tracking:true};}
         catch(e){
           s.lastError='Falha ao iniciar captura: '+errMsg(e);
           addLog(s,s.lastError);
@@ -1158,12 +1307,27 @@ chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
       case 'QUALITY_CHECK':{
         if(!s.tracking){s.qualityStatus={status:'Captura parada: a extensão não controla a qualidade do vídeo.',applied:false};return s.qualityStatus;}
         const inspection=await readPlayback(s.tabId);
-        if(inspection.probe)return await applyQualityToProbe(s,inspection.probe,s.qualityMinOnCapture?'min':'restore',true);
+        if(inspection.probe){acknowledgeManualQuality(s);return await applyQualityToProbe(s,inspection.probe,s.qualityMinOnCapture?'min':'restore',true);}
         s.qualityStatus={status:'Player não acessível para consultar resolução. Usa as definições do vídeo.',applied:false};
         return s.qualityStatus;
       }
       case 'RECOVER_SETTINGS':s.autoRecover=Boolean(msg.enabled);addLog(s,`Recuperação automática ${s.autoRecover?'ativada':'desativada'}.`);return {ok:true};
-      case 'PLAYER_ACTIVITY':if(allowedTab(s,sender.tab?.id) && (s.playbackSpeed>1||s.qualityMinOnCapture))await runWatchdog(s,'novo player');return {ok:true};
+      case 'PLAYER_ACTIVITY': {
+        if(!allowedTab(s,sender.tab?.id))return {ok:true};
+        // Uma mensagem de um iframe não pode aplicar a qualidade à URL da aula
+        // anterior enquanto o SPA da Hotmart está a transitar.
+        await syncTabRoute(s,sender.tab.id);
+        // timeupdate periódico serve apenas para acordar uma captura pendente
+        // iniciada a meio do vídeo. Depois de aplicada a qualidade e a
+        // velocidade, ignorar o evento para poupar CDP/storage.
+        if(msg.reason==='timeupdate' && s.qualityAuto?.attempted &&
+            (s.playbackSpeed<=1 || s.speedStatus?.applied===s.playbackSpeed))return {ok:true};
+        // runWatchdog já protege a qualidade através de qualityAuto.attempted;
+        // não impedir a reaplicação de 6x quando o provider substitui o <video>
+        // sem mudar de URL/lessonId.
+        if(s.playbackSpeed>1 || s.qualityMinOnCapture)await runWatchdog(s,'novo player');
+        return {ok:true};
+      }
       case 'CHECK_PLAYER':if(s.tracking)await runWatchdog(s,'verificação manual');return {ok:true};
       case 'NEXT_LESSON':{if(!s.tracking)throw Error('A captura tem de estar ativa.');const ok=await attemptNext(s,'pedido manual');if(!ok)throw Error('Não foi possível identificar o botão Próxima aula. Usa o botão da Hotmart.');return {advanced:true};}
       case 'RENAME':{
@@ -1193,6 +1357,6 @@ chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
       case 'CLEAR_ELIGIBLE':return clearEligible(s);
       default:throw Error('Comando inválido.');
     }
-  },msg?.type!=='STATE').then(data=>reply({ok:true,...(data||{})})).catch(e=>reply({ok:false,error:errMsg(e)}));
+  },!['STATE','PREPARE_START'].includes(msg?.type)).then(data=>reply({ok:true,...(data||{})})).catch(e=>reply({ok:false,error:errMsg(e)}));
   return true;
 });

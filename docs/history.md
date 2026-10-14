@@ -1,3 +1,23 @@
+# v0.8.6 — início seguro e continuação de aulas (2026-10-13)
+
+- Captura nova exige confirmar que o player regressou a `00:00` antes de criar uma aula; falha no `seek` interrompe a operação sem gerar captura parcial.
+- Capturas da mesma URL solicitam decisão explícita: continuar, iniciar nova ou cancelar. A opção continuar reutiliza a captura e retrocede 8 segundos face à última legenda.
+- Preserva todas as transcrições pré-existentes; escolhas e verificações são efetuadas no service worker e no popup.
+- Novos testes `test-capture-start.mjs` cobrem começo, duplicações por URL, retoma e seleção inválida.
+
+# v0.8.5 — qualidade mínima no início da reprodução (2026-10-13)
+
+- Reage a `playing`, `canplay` e `loadeddata` para tentar qualidade mínima sem esperar alarmes periódicos.
+- Uma tentativa automática por aula para evitar que menus se abram em ciclo; tentativa manual continua disponível.
+
+# v0.8.4 — proteção contra reabertura repetida do menu (2026-10-12)
+
+- Supervisor não repete tentativas de qualidade após uma primeira tentativa automática, mesmo quando não confirmada.
+
+# v0.8.3 — opção HTML da Hotmart (2026-10-12)
+
+- Identifica botões `button[role="menuitem"][aria-label="240p"]` e confirma o estado visual selecionado; validação real ainda pendente.
+
 ## v0.8.1 — Exportação simplificada e correção de clique em qualidade (iframe)
 
 - **Qualidade mínima:** corrigida a conversão de coordenadas em players montados dentro de um iframe do mesmo separador. O cálculo agora utiliza a janela do próprio elemento `240p`, não a janela em que o script começou a correr.

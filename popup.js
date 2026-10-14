@@ -140,7 +140,46 @@ $('qualityCheck').addEventListener('click',()=>work({type:'QUALITY_CHECK'},'Qual
 $('autoRecover').addEventListener('change',ev=>work({type:'RECOVER_SETTINGS',enabled:ev.target.checked},ev.target.checked?'Recuperação automática ativada.':'Recuperação automática desativada.'));
 $('checkPlayer').addEventListener('click',()=>work({type:'CHECK_PLAYER'},'Estado do vídeo atualizado.'));
 $('nextLesson').addEventListener('click',()=>work({type:'NEXT_LESSON'},'Pedido de próxima aula enviado.'));
-$('start').addEventListener('click',()=>work({type:'START',tabId:activeTabId},'Captura iniciada.'));
+function formatStartTime(seconds){const n=Math.max(0,Math.floor(Number(seconds)||0));return `${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;}
+async function startCaptureWithMode(mode,previousId){
+  if(busy)return;
+  busy=true;
+  try {
+    await ask({type:'START',tabId:activeTabId,mode,resumeLessonId:previousId||null});
+    await load();
+    info(mode==='resume'?'Captura anterior retomada, mantendo as legendas existentes.':'Captura iniciada após regressar ao início do vídeo.',true);
+  }catch(e){info(e.message);}finally{busy=false;}
+}
+$('start').addEventListener('click',async()=>{
+  if(busy)return;
+  busy=true;
+  try {
+    const prepared=await ask({type:'PREPARE_START',tabId:activeTabId});
+    if(!prepared.video){info('Vídeo ainda não acessível. Espera o player carregar e volta a tentar.');return;}
+    const matches=prepared.matches||[];
+    if(!matches.length){busy=false;await startCaptureWithMode('fresh');return;}
+    const selector=$('resumeFrom');
+    selector.replaceChildren(...matches.map(item=>{
+      const option=document.createElement('option');option.value=item.id;
+      option.textContent=`${item.title} · ${item.segments} blocos · ${formatStartTime(item.lastCueMs/1000)}`;
+      return option;
+    }));
+    const describe=()=>{
+      const selected=matches.find(item=>item.id===selector.value);
+      $('resumeDescription').textContent=selected?
+        `Continuar desde aproximadamente ${formatStartTime(Math.max(0,selected.lastCueMs/1000-8))}, com 8 segundos de sobreposição para evitar perder legendas. Se criares uma nova captura, a anterior é preservada.`:'';
+    };
+    selector.onchange=describe;describe();
+    $('resumeDialog').showModal();
+  }catch(e){info(e.message);}finally{busy=false;}
+});
+$('resumeExisting').addEventListener('click',async()=>{
+  const id=$('resumeFrom').value;$('resumeDialog').close();await startCaptureWithMode('resume',id);
+});
+$('restartCapture').addEventListener('click',async()=>{
+  $('resumeDialog').close();await startCaptureWithMode('restart');
+});
+$('cancelStart').addEventListener('click',()=>$('resumeDialog').close());
 $('stop').addEventListener('click',()=>work({type:'STOP'},'Captura parada. Os dados continuam guardados no Brave. Descarrega apenas quando quiseres.'));
 $('refresh').addEventListener('click',load);
 $('rename').addEventListener('click',()=>{

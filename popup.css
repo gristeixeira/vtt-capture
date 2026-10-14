@@ -28,3 +28,5 @@
 .select-all-label{display:flex;gap:9px;align-items:center;padding:8px 4px;margin:4px 0 8px;font-weight:650;font-size:12px;cursor:pointer}
 .select-all-label input{flex:0 0 16px;width:16px;height:16px;margin:0;accent-color:#70c0eb;cursor:pointer}
 .supervisor-panel{margin-top:12px}
+
+.capture-dialog{width:min(360px,95vw);box-sizing:border-box;border:1px solid #405675;border-radius:12px;padding:16px;color:#edf2fa;background:#162339;box-shadow:0 12px 30px #000a;max-height:85vh;overflow:auto}.capture-dialog::backdrop{background:#000b}.capture-dialog h2{margin:0 0 8px;font-size:15px}.capture-dialog p{font-size:12px;line-height:1.45}.capture-dialog label{display:block;margin:12px 0 6px;font-size:12px}.capture-dialog select{width:100%;padding:9px;margin-bottom:8px;border:1px solid #445e82;background:#243755;color:white;border-radius:6px}.capture-dialog button{margin-top:8px}
