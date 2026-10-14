@@ -8,7 +8,7 @@ const manifest=JSON.parse(read('manifest.json'));
 
 test('versão aparece no topo e coincide com manifest',()=>{
   const html=read('popup.html'), js=read('popup.js');
-  assert.equal(manifest.version,'0.8.2');
+  assert.equal(manifest.version,'0.8.6');
   assert.match(html,/FHAD VTT Capture <span id="extensionVersion"/);
   assert.match(js,/getManifest\(\)\.version/);
 });

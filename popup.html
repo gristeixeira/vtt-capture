@@ -17,6 +17,16 @@
       <button id="stop" class="danger" hidden>■ Parar captura</button>
       <button id="refresh" class="secondary">↻</button>
     </div>
+    <dialog id="resumeDialog" class="capture-dialog" aria-labelledby="resumeHeading">
+      <h2 id="resumeHeading">Já existe uma captura desta aula</h2>
+      <p>Escolhe como pretendes iniciar. Nenhuma captura anterior será eliminada.</p>
+      <label for="resumeFrom">Captura anterior</label>
+      <select id="resumeFrom"></select>
+      <p id="resumeDescription" class="hint"></p>
+      <button type="button" class="primary full" id="resumeExisting">▶ Continuar captura anterior</button>
+      <button type="button" class="secondary full" id="restartCapture">↺ Nova captura desde 00:00</button>
+      <button type="button" class="secondary full" id="cancelStart">Cancelar</button>
+    </dialog>
     <p id="message" class="notice" hidden role="alert"></p>
     <p id="captureHealth" class="capture-health" aria-live="polite">A verificar ligação…</p>
     <p id="help" class="hint">Abre uma aula da Hotmart neste separador e inicia a captura. Não precisas de abrir o DevTools.</p>

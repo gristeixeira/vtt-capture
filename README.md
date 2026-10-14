@@ -2,7 +2,7 @@
 
 Extensão para Brave/Chromium (Manifest V3) destinada à captura e organização de legendas WEBVTT por aula em plataformas compatíveis, incluindo a Hotmart.
 
-**Versão deste código-fonte: 0.8.2 (desenvolvimento).** A versão instalada e validada anteriormente é a 0.8.1. A tentativa de confirmação automática de qualidade 240p da 0.8.2 ainda não foi validada no player Hotmart real.
+**Versão atual do código-fonte: 0.8.6.** Corresponde ao pacote de instalação FHAD-VTT-Capture-v0.8.6-install.zip. A aplicação de qualidade mínima e a navegação automática ainda exigem validação na Hotmart real.
 
 ## Instalação
 
@@ -21,6 +21,8 @@ Extensão para Brave/Chromium (Manifest V3) destinada à captura e organização
 - Contador de segmentos e indicador visual de captura.
 - Tentativa de velocidade 6× e de redução da resolução quando o player permite.
 - Supervisor de reprodução e ações manuais de recuperação.
+- Início seguro com verificação do posicionamento do vídeo em `00:00`.
+- Ao encontrar capturas anteriores da mesma URL: continuar (com recuo de 8 segundos), iniciar nova ou cancelar; nenhuma captura anterior é apagada.
 
 ## Testes
 
@@ -29,6 +31,8 @@ Requer Node.js 22+ para execução da suíte JS:
 ```bash
 node --test tests/*.mjs
 ```
+
+A suíte contém testes de compatibilidade do novo arranque, incluindo decisão sobre retoma e isolamento de URL.
 
 Os testes em `tests/*.py` são opcionais e podem exigir Chromium/Playwright e dependências adicionais. O workflow CI executa os testes JavaScript. O sucesso de testes simulados **não** garante controlo de qualidade no player real da Hotmart.
 

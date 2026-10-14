@@ -78,6 +78,13 @@ globalThis.chrome={
   webNavigation:{onCommitted:hooks.onCommitted,onHistoryStateUpdated:hooks.onHistory},
   runtime:{onMessage:hooks.onMessage,onStartup:hooks.onStart,onInstalled:hooks.onInstalled}
 };
+// MV3 capture-start now inspects the player and verifies seeking before starting.
+// Keep the simulated player consistent with the existing CDP/video mocks.
+chrome.scripting={async executeScript({target,func,args=[]}){
+  if(func.name==='inspect')return [{frameId:simulateIframe?2:0,result:{score:100,currentTime:10,duration:300,paused:false}}];
+  if(func.name==='seek')return [{frameId:target.frameIds?.[0]??0,result:{ok:true,requested:args[0]||0,actual:args[0]||0,wasPlaying:true}}];
+  return [{frameId:target.frameIds?.[0]??0,result:null}];
+}};
 await import('../background.js');
 function message(payload,tab=5){if(payload.type==='METADATA')activeTabUrl=payload.meta.url;return new Promise(resolve=>{hooks.onMessage.listeners[0](payload,{tab:{id:tab}},resolve);});}
 async function cdpResponse(id,text){
@@ -89,7 +96,7 @@ const vtt1='WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nPrimeira aula\n';
 const vtt2='WEBVTT\n\n1\n00:00:05.000 --> 00:00:06.000\nSegunda aula\n';
 
 test('captura duas aulas sem downloads automáticos e permite exportação manual',async()=>{
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/aula1?token=secret',title:'Introdução',course:'LightCopy',confidence:'alta'}});
   await cdpResponse('req1',vtt1);
   let state=(await message({type:'STATE'})).state;
@@ -142,7 +149,7 @@ test('captura duas aulas sem downloads automáticos e permite exportação manua
   let completed=(await message({type:'STATE'})).state;
   assert.equal(completed.lessons.every(l=>l.exportStatus==='concluído'),true);
   // Proteção da aula ainda ativa, mesmo se o seu ZIP tiver sido descarregado.
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/aula3',title:'Terceira aula',course:'LightCopy',confidence:'alta'}});
   await cdpResponse('req3','WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nTexto original\n');
   let during=(await message({type:'STATE'})).state;
@@ -185,14 +192,14 @@ test('captura duas aulas sem downloads automáticos e permite exportação manua
 test('não chama tabs.get com identificadores inválidos e resolve a aba Hotmart ativa',async()=>{
   for(const invalid of [null,undefined,'5',-1]){
     const before=tabGetArgs.length;
-    const result=await message({type:'START',tabId:invalid});
+    const result=await message({type:'START',tabId:invalid,mode:'restart'});
     assert.equal(result.ok,true,JSON.stringify(result));
     assert.equal(tabGetArgs.length,before);
     assert.equal((await message({type:'STATE'})).state.tabId,5);
     assert.equal((await message({type:'STOP'})).ok,true);
   }
   activeHotmartTab=false;
-  const bad=await message({type:'START',tabId:null});
+  const bad=await message({type:'START',tabId:null,mode:'restart'});
   assert.equal(bad.ok,false);
   assert.match(bad.error,/Não foi possível identificar o separador/);
   activeHotmartTab=true;
@@ -204,7 +211,7 @@ test('ao receber ended, tenta Próxima aula após prazo e mantém download exclu
   let clock=200000;
   Date.now=()=>clock;
   try{
-    assert.equal((await message({type:'START',tabId:5})).ok,true);
+    assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
     await message({type:'METADATA',meta:{url:'https://play.hotmart.com/aula4',title:'Aula de conclusão',course:'LightCopy',confidence:'alta'}});
     await cdpResponse('req-test-end','WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nFim da aula\n');
     const countBefore=downloads.length;
@@ -221,7 +228,7 @@ test('ao receber ended, tenta Próxima aula após prazo e mantém download exclu
 });
 
 test('limpeza manual de capturas 0/0 protege aula atual, segmentos pendentes e conteúdos capturados',async()=>{
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/vazia',title:'Aula ainda sem legendas',course:'LightCopy',confidence:'alta'}});
   const state0=(await message({type:'STATE'})).state;
   const emptyId=state0.currentId;
@@ -268,7 +275,7 @@ test('supervisor encontra vídeo em iframe e retoma no mesmo contexto',async()=>
   Date.now=()=>clock;
   simulateIframe=true;
   try{
-    assert.equal((await message({type:'START',tabId:5})).ok,true);
+    assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
     await message({type:'METADATA',meta:{url:'https://play.hotmart.com/iframe',title:'Aula em iframe',course:'LightCopy',confidence:'alta'}});
     assert.equal((await message({type:'CHECK_PLAYER'})).ok,true);
     let state=(await message({type:'STATE'})).state;
@@ -288,7 +295,7 @@ test('supervisor encontra vídeo em iframe e retoma no mesmo contexto',async()=>
 
 
 test('badge exibe número de segmentos capturados, reinicia numa nova sessão e nunca usa REC',async()=>{
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/badge',title:'Aula contador',course:'LightCopy',confidence:'alta'}});
   assert.equal(badgeTexts.at(-1).text,'0');
   await cdpResponse('badge-1','WEBVTT\n\n00:00:03.000 --> 00:00:05.000\nUm bloco\n');
@@ -311,14 +318,14 @@ test('merge manual de duas capturas da mesma aula remove duplicadas, exclui font
   const title='Módulo 02 - Termômetro de aquecimento de público';
   const page='https://play.hotmart.com/curso/termo';
   const metadata={url:page+'?track=secret',title,course:'Hotmart',confidence:'alta'};
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:metadata});
   await cdpResponse('merge-part-1','WEBVTT\n\n00:00:03.000 --> 00:00:04.000\nUma fala original\n');
   await cdpResponse('merge-part-2','WEBVTT\n\n00:00:04.000 --> 00:00:05.000\nFala repetida!\n');
   await message({type:'STOP'});
   const first=(await message({type:'STATE'})).state.lessons.at(-1);
   assert.equal(first.cueCount,2);
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{...metadata,course:'Big Black Friday Infinita'}});
   await cdpResponse('merge-part-3','WEBVTT\n\n00:00:04.080 --> 00:00:05.060\nFala repetida\n');
   await cdpResponse('merge-part-4','WEBVTT\n\n00:00:06.000 --> 00:00:07.000\nFala nova\n');
@@ -372,7 +379,7 @@ test('merge manual de duas capturas da mesma aula remove duplicadas, exclui font
 
 test('rejeita mistura de aulas e não permite juntar aula ativa',async()=>{
   const title='Aula A';
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/diferente-1',title,course:'LightCopy',confidence:'alta'}});
   await cdpResponse('mix-a','WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nAAA\n');
   let state=(await message({type:'STATE'})).state;
@@ -426,7 +433,7 @@ test('exporta só as aulas selecionadas num único ZIP, sem mudar as outras',asy
 });
 
 test('seleção inclui aula ativa apenas como snapshot explícito e não elimina legendas novas',async()=>{
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/selecao-ativa',title:'Aula Parcial',course:'LightCopy',confidence:'alta'}});
   await cdpResponse('partial-one','WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nUma fala parcial\n');
   let state=(await message({type:'STATE'})).state;
@@ -452,7 +459,7 @@ test('botões de velocidade alteram o player no iframe, sem iniciar downloads',a
   await message({type:'STOP'});
   const base=downloads.length;
   simulateIframe=true;simulatedRate=1;providerLimit=0;
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/speed-01',title:'Aula para acelerar',course:'LightCopy',confidence:'alta'}});
   let result=await message({type:'SPEED_SET',speed:4});
   assert.equal(result.ok,true,JSON.stringify(result));
@@ -481,7 +488,7 @@ test('botões de velocidade alteram o player no iframe, sem iniciar downloads',a
 
 test('se Hotmart limitar a velocidade, informa taxa efetivamente aplicada',async()=>{
   simulateIframe=true;providerLimit=2;simulatedRate=1;
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   const answer=await message({type:'SPEED_SET',speed:6});
   assert.equal(answer.ok,true);
   assert.equal(answer.speed,6);
@@ -498,7 +505,7 @@ test('se Hotmart limitar a velocidade, informa taxa efetivamente aplicada',async
 test('player inacessível fica pendente; altera assim que o iframe aparece',async()=>{
   simulateIframe=false;
   await message({type:'STOP'});
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   const pending=await message({type:'SPEED_SET',speed:3});
   assert.equal(pending.ok,true);
   assert.equal(pending.applied,null);
@@ -514,7 +521,7 @@ test('player inacessível fica pendente; altera assim que o iframe aparece',asyn
 
 test('evento de novo player reaplica taxa sem esperar 30 s; parar repõe 1×',async()=>{
   simulateIframe=true;simulatedRate=1;providerLimit=0;
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   assert.equal((await message({type:'SPEED_SET',speed:6})).applied,6);
   // Player substituído pelo fornecedor durante a mesma aula.
   simulatedRate=1;
@@ -533,7 +540,7 @@ test('evento de novo player reaplica taxa sem esperar 30 s; parar repõe 1×',as
 test('qualidade mínima aplica-se durante a captura e é reposta ao parar; nenhum download automático',async()=>{
   simulateIframe=true;simulatedQuality=null;
   const beforeDownloads=downloads.length;
-  const startResult=await message({type:'START',tabId:5});
+  const startResult=await message({type:'START',tabId:5,mode:'restart'});
   assert.equal(startResult.ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/quality-test',title:'Teste resolução',course:'LightCopy',confidence:'alta'}});
   await message({type:'CHECK_PLAYER'});
@@ -558,7 +565,7 @@ test('qualidade mínima aplica-se durante a captura e é reposta ao parar; nenhu
 
 test('SPA: a nova rota fecha a aula anterior antes do h1 atualizar e mantém VTT separados',async()=>{
   activeTabUrl='https://play.hotmart.com/pt-BR/club/course/content/aula-briefing';
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Módulo 02 - Briefing de Copy',course:'LightCopy',confidence:'alta'}});
   await cdpResponse('briefing1','WEBVTT\n\n00:00:10.000 --> 00:00:12.000\nPrimeira fala do briefing\n');
   let state=(await message({type:'STATE'})).state;
@@ -596,7 +603,7 @@ test('SPA: a nova rota fecha a aula anterior antes do h1 atualizar e mantém VTT
 
 test('sem evento de navegação: o primeiro VTT verifica URL do Brave antes de vincular a aula',async()=>{
   activeTabUrl='https://play.hotmart.com/content/aula-a';
-  await message({type:'START',tabId:5});
+  await message({type:'START',tabId:5,mode:'restart'});
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Aula A',confidence:'alta'}});
   await cdpResponse('a1','WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nFala A\n');
   const before=(await message({type:'STATE'})).state;
@@ -617,7 +624,7 @@ test('sem evento de navegação: o primeiro VTT verifica URL do Brave antes de v
 
 test('pedidos VTT iniciados na aula anterior continuam nela após a transição SPA',async()=>{
   activeTabUrl='https://play.hotmart.com/content/aula-antiga';
-  await message({type:'START',tabId:5});
+  await message({type:'START',tabId:5,mode:'restart'});
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Aula Antiga',confidence:'alta'}});
   const first=(await message({type:'STATE'})).state.currentId;
   answers.set('before-transition','WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nFala atrasada\n');
@@ -635,7 +642,7 @@ test('pedidos VTT iniciados na aula anterior continuam nela após a transição 
 
 test('segmento iniciado antes da mudança de URL mantém aula original mesmo que a resposta venha depois',async()=>{
   activeTabUrl='https://play.hotmart.com/content/aula-tarde';
-  await message({type:'START',tabId:5});
+  await message({type:'START',tabId:5,mode:'restart'});
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Aula Antiga',confidence:'alta'}});
   const original=(await message({type:'STATE'})).state.currentId;
   answers.set('segment-delayed','WEBVTT\n\n00:00:22.000 --> 00:00:24.000\nAinda pertence à antiga\n');
@@ -655,7 +662,7 @@ test('segmento iniciado antes da mudança de URL mantém aula original mesmo que
 
 test('usa contexto principal do iframe para aceder às APIs do player',async()=>{
   simulateIframe=true;simulatedMainWorld=true;
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:'https://play.hotmart.com/main-world',title:'Qualidade frame',course:'LightCopy',confidence:'alta'}});
   hooks.events.emit({tabId:5},'Runtime.executionContextCreated',{
     context:{id:950,auxData:{frameId:'player-frame',isDefault:true}}});
@@ -685,7 +692,7 @@ test('repara sessão de debugger órfã quando popup mostra PARADO',async()=>{
   assert.equal((await message({type:'STOP'})).ok,true);
   // Depurador residual, desligado do estado persistido após uma atualização.
   attached=true;emitDetachDuringRecovery=true;
-  const result=await message({type:'START',tabId:5});
+  const result=await message({type:'START',tabId:5,mode:'restart'});
   assert.equal(result.ok,true);
   const state=(await message({type:'STATE'})).state;
   assert.equal(state.tracking,true);
@@ -700,7 +707,7 @@ test('falha após attach limpa debugger, mostra erro e permite retry',async()=>{
   assert.equal((await message({type:'STOP'})).ok,true);
   failNextNetworkEnable=true;
   const before=saved.fhad_vtt_capture_v1.lessons.length;
-  const result=await message({type:'START',tabId:5});
+  const result=await message({type:'START',tabId:5,mode:'restart'});
   assert.equal(result.ok,false);
   assert.match(result.error,/simulated Network\.enable failure/);
   const after=(await message({type:'STATE'})).state;
@@ -708,7 +715,7 @@ test('falha após attach limpa debugger, mostra erro e permite retry',async()=>{
   assert.match(after.lastError,/Falha ao iniciar captura/);
   assert.equal(attached,false);
   assert.equal(after.lessons.length,before);
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   const recovered=(await message({type:'STATE'})).state;
   assert.equal(recovered.tracking,true);
   assert.equal(recovered.lastError,null);
@@ -718,14 +725,14 @@ test('falha após attach limpa debugger, mostra erro e permite retry',async()=>{
 test('não interfere com debugger alheio; dá mensagem legível e continua parado',async()=>{
   assert.equal((await message({type:'STOP'})).ok,true);
   attached=true;denyDebugDetach=true;foreignDebugger=true;
-  const result=await message({type:'START',tabId:5});
+  const result=await message({type:'START',tabId:5,mode:'restart'});
   assert.equal(result.ok,false);
   assert.match(result.error,/Já existe uma ligação de depuração/);
   const state=(await message({type:'STATE'})).state;
   assert.equal(state.tracking,false);
   assert.equal(attached,true);
   denyDebugDetach=false;attached=false;foreignDebugger=false;
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'STOP'});
 });
 
@@ -733,7 +740,7 @@ test('não interfere com debugger alheio; dá mensagem legível e continua parad
 test('fechar e voltar a abrir popup não altera estado nem cria duplicação',async()=>{
   assert.equal((await message({type:'STOP'})).ok,true);
   activeTabUrl='https://play.hotmart.com/content/popup-reopen';
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Aula popup',confidence:'alta'}});
   await cdpResponse('popup-clip','WEBVTT\n\n00:00:02.000 --> 00:00:03.000\nOlá\n');
   const first=(await message({type:'STATE'})).state;
@@ -754,7 +761,7 @@ test('fechar e voltar a abrir popup não altera estado nem cria duplicação',as
 test('popup recupera sessão CDP real com estado antigo sem criar aula nova',async()=>{
   assert.equal((await message({type:'STOP'})).ok,true);
   activeTabUrl='https://play.hotmart.com/content/popup-recovered';
-  const response=await message({type:'START',tabId:5});
+  const response=await message({type:'START',tabId:5,mode:'restart'});
   assert.equal(response.ok,true);
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Aula em andamento',confidence:'alta'}});
   const first=(await message({type:'STATE'})).state;
@@ -770,7 +777,7 @@ test('popup recupera sessão CDP real com estado antigo sem criar aula nova',asy
   // é tratado pelo teste dedicado abaixo.
   state.tracking=true;
   state.tabId=5;
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   const again=(await message({type:'STATE'})).state;
   assert.equal(again.lessons.length,count);
   assert.equal(again.currentId,lessonId);
@@ -780,7 +787,7 @@ test('popup recupera sessão CDP real com estado antigo sem criar aula nova',asy
 test('sessão CDP persistente é restaurada após estado ser reiniciado sem detach',async()=>{
   assert.equal((await message({type:'STOP'})).ok,true);
   activeTabUrl='https://play.hotmart.com/content/restart-popup';
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Antes de reiniciar',confidence:'alta'}});
   await cdpResponse('before-restart','WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nFala guardada\n');
   const old=(await message({type:'STATE'})).state;
@@ -809,7 +816,7 @@ test('não recupera debugger de terceiros durante abertura de popup',async()=>{
 test('estado recupera CDP mesmo sem alvo attached no getTargets e sem Runtime.evaluate',async()=>{
   await message({type:'STOP'});
   activeTabUrl='https://play.hotmart.com/content/sem-target';
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Aula sem target',confidence:'alta'}});
   await cdpResponse('stable-vtt','WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nTeste de recuperação\n');
   const before=(await message({type:'STATE',tabId:5})).state;
@@ -853,7 +860,7 @@ test('CDP: 240p é selecionado com eventos de rato reais, não clique sintético
   forceMenuQuality=true;simulateIframe=true;
   const before=trustedMouseEvents.length;
   activeTabUrl='https://play.hotmart.com/content/qualidade-240p';
-  assert.equal((await message({type:'START',tabId:5})).ok,true);
+  assert.equal((await message({type:'START',tabId:5,mode:'restart'})).ok,true);
   await message({type:'METADATA',meta:{url:activeTabUrl,title:'Teste 240p',confidence:'alta'}});
   const result=await message({type:'QUALITY_CHECK'});
   assert.equal(result.ok,true);

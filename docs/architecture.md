@@ -1,6 +1,6 @@
 # Arquitetura da FHAD VTT Capture
 
-Versão do código-fonte: **0.8.2 (desenvolvimento)**.
+Versão do código-fonte: **0.8.6**.
 
 ## Componentes
 
@@ -20,3 +20,11 @@ As transcrições ficam no armazenamento local da extensão no Brave. Não coloc
 A mudança de aula deve ser associada à URL e ao título do `<h1>`, sem misturar pedidos VTT entre sessões. A qualidade de vídeo é ajustada por interação com o player quando possível; em players proprietários, o comportamento só pode ser considerado confirmado quando o próprio player indica a resolução ativa. A escolha automática de 240p ainda aguarda validação de ponta a ponta na Hotmart real.
 
 Antes de considerar uma alteração concluída, atualizar documentação, testes e o registo de decisões relevante no mesmo commit/PR.
+
+## Arranque e continuação (v0.8.6)
+
+- `lib/capture-start.js` decide entre arranque do zero, nova captura e continuação, pela URL normalizada.
+- `background.js` localiza o player HTML5 (também em iframes), confirma `seek` antes de criar/retomar uma captura e restaura o estado caso haja falha.
+- A continuação recua até 8 segundos antes da última legenda. O merge e a deduplicação mantêm-se disponíveis.
+- A qualidade mínima é tentada ao receber eventos de reprodução (`lib/player-start-events.js` e `lib/quality-scheduler.js`), uma vez por aula; resultados não confirmados não devem ser anunciados como sucesso.
+- As decisões funcionais/técnicas e os testes afetados devem ser atualizados no mesmo PR.
